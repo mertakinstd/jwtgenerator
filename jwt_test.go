@@ -105,3 +105,82 @@ func TestExpiredToken(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkGenerate(b *testing.B) {
+	key := "test-key"
+	subject := "test-subject"
+	expire := 24 * time.Hour
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := jwt.Generate(subject, key, expire)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkGenerateParallel(b *testing.B) {
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, err := jwt.Generate("test", "secret", time.Hour)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkValidate(b *testing.B) {
+	key := "test-key"
+	token, _ := jwt.Generate("test-subject", key, 24*time.Hour)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := jwt.Validate(token, key, true)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkValidateParallel(b *testing.B) {
+	key := "test-key"
+	token, _ := jwt.Generate("test-subject", key, 24*time.Hour)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			err := jwt.Validate(token, key, true)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkExport(b *testing.B) {
+	token, _ := jwt.Generate("test-subject", "test-key", 24*time.Hour)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := jwt.Export(token)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkExportParallel(b *testing.B) {
+	token, _ := jwt.Generate("test-subject", "test-key", 24*time.Hour)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, err := jwt.Export(token)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
