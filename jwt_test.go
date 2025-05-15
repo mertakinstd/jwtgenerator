@@ -1,11 +1,9 @@
-package main_test
+package jwt
 
 import (
 	"strings"
 	"testing"
 	"time"
-
-	jwt "github.com/mertakinstd/jwtgenerator"
 )
 
 //go:generate go test -v -race -bench=. -benchmem -cpu=1,2,4,8 -count=1
@@ -18,7 +16,7 @@ func TestGenerate(t *testing.T) {
 	subject := "test-subject"
 	expire := 24 * time.Hour
 
-	token, err := jwt.Generate(subject, key, expire)
+	token, err := Generate(subject, key, expire)
 	if err != nil {
 		t.Errorf("Generate() error = %v", err)
 		return
@@ -65,7 +63,7 @@ func TestValidate(t *testing.T) {
 		},
 	}
 
-	validToken, _ := jwt.Generate("test", "12345678901234567890123456789012", 24*time.Hour)
+	validToken, _ := Generate("test", "12345678901234567890123456789012", 24*time.Hour)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,7 +72,7 @@ func TestValidate(t *testing.T) {
 				tokenToValidate = validToken
 			}
 
-			err := jwt.Validate(tokenToValidate, tt.key, tt.strict)
+			err := Validate(tokenToValidate, tt.key, tt.strict)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -84,9 +82,9 @@ func TestValidate(t *testing.T) {
 
 func TestExport(t *testing.T) {
 	subject := "test-subject"
-	token, _ := jwt.Generate(subject, "12345678901234567890123456789012", 24*time.Hour)
+	token, _ := Generate(subject, "12345678901234567890123456789012", 24*time.Hour)
 
-	got, err := jwt.Export(token)
+	got, err := Export(token)
 	if err != nil {
 		t.Errorf("Export() error = %v", err)
 		return
@@ -99,12 +97,12 @@ func TestExport(t *testing.T) {
 
 func TestExpiredToken(t *testing.T) {
 	key := "12345678901234567890123456789012"
-	token, _ := jwt.Generate("test", key, 1*time.Second)
+	token, _ := Generate("test", key, 1*time.Second)
 
 	// Simulate token expiration by waiting for 2 seconds
 	time.Sleep(2 * time.Second)
 
-	if err := jwt.Validate(token, key, false); err != nil {
+	if err := Validate(token, key, false); err != nil {
 		if !strings.Contains(err.Error(), "expired") {
 			t.Errorf("Expected expired error, got %v", err)
 		}
@@ -118,7 +116,7 @@ func BenchmarkGenerate(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := jwt.Generate(subject, key, expire)
+		_, err := Generate(subject, key, expire)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -128,7 +126,7 @@ func BenchmarkGenerate(b *testing.B) {
 func BenchmarkGenerateParallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, err := jwt.Generate("test", "12345678901234567890123456789012", time.Hour)
+			_, err := Generate("test", "12345678901234567890123456789012", time.Hour)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -138,11 +136,11 @@ func BenchmarkGenerateParallel(b *testing.B) {
 
 func BenchmarkValidate(b *testing.B) {
 	key := "12345678901234567890123456789012"
-	token, _ := jwt.Generate("test-subject", key, 24*time.Hour)
+	token, _ := Generate("test-subject", key, 24*time.Hour)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		err := jwt.Validate(token, key, true)
+		err := Validate(token, key, true)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -151,12 +149,12 @@ func BenchmarkValidate(b *testing.B) {
 
 func BenchmarkValidateParallel(b *testing.B) {
 	key := "12345678901234567890123456789012"
-	token, _ := jwt.Generate("test-subject", key, 24*time.Hour)
+	token, _ := Generate("test-subject", key, 24*time.Hour)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			err := jwt.Validate(token, key, true)
+			err := Validate(token, key, true)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -165,11 +163,11 @@ func BenchmarkValidateParallel(b *testing.B) {
 }
 
 func BenchmarkExport(b *testing.B) {
-	token, _ := jwt.Generate("test-subject", "12345678901234567890123456789012", 24*time.Hour)
+	token, _ := Generate("test-subject", "12345678901234567890123456789012", 24*time.Hour)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := jwt.Export(token)
+		_, err := Export(token)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -177,12 +175,12 @@ func BenchmarkExport(b *testing.B) {
 }
 
 func BenchmarkExportParallel(b *testing.B) {
-	token, _ := jwt.Generate("test-subject", "12345678901234567890123456789012", 24*time.Hour)
+	token, _ := Generate("test-subject", "12345678901234567890123456789012", 24*time.Hour)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, err := jwt.Export(token)
+			_, err := Export(token)
 			if err != nil {
 				b.Fatal(err)
 			}

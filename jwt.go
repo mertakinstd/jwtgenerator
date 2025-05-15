@@ -1,4 +1,4 @@
-package main
+package jwt
 
 import (
 	"crypto/hmac"
@@ -30,7 +30,7 @@ const (
 )
 
 var (
-	dataPool = sync.Pool{
+	bufferPool = sync.Pool{
 		New: func() any {
 			return &bufferWrapper{
 				buf: make([]byte, 0, 256),
@@ -38,15 +38,7 @@ var (
 		},
 	}
 
-	keyPool = sync.Pool{
-		New: func() any {
-			return &bufferWrapper{
-				buf: make([]byte, 0, keySize),
-			}
-		},
-	}
-
-	tokenPool = sync.Pool{
+	encodeBufferPool = sync.Pool{
 		New: func() any {
 			return &bufferWrapper{
 				buf: make([]byte, 0, 256),
@@ -54,15 +46,7 @@ var (
 		},
 	}
 
-	encode64Pool = sync.Pool{
-		New: func() any {
-			return &bufferWrapper{
-				buf: make([]byte, 0, 256),
-			}
-		},
-	}
-
-	decode64Pool = sync.Pool{
+	decodeBufferPool = sync.Pool{
 		New: func() any {
 			return &bufferWrapper{
 				buf: make([]byte, 0, 256),
@@ -104,50 +88,39 @@ func Generate(subject string, key string, expire time.Duration) (string, error) 
 }
 
 func signToken(key, header, payload string) (string, error) {
-	keyWrapper := keyPool.Get().(*bufferWrapper)
+	bufferW := bufferPool.Get().(*bufferWrapper)
 	defer func() {
-		keyWrapper.buf = keyWrapper.buf[:0]
-		keyPool.Put(keyWrapper)
+		bufferW.buf = bufferW.buf[:0]
+		bufferPool.Put(bufferW)
 	}()
 
-	copy(keyWrapper.buf[:keySize], key)
+	bufferW.buf = bufferW.buf[:len(key)]
+	copy(bufferW.buf, key)
 
-	mac := hmac.New(sha256.New, keyWrapper.buf[:keySize])
+	mac := hmac.New(sha256.New, bufferW.buf)
 
 	tokenLength := headerStrBase64Size + 1 + len(payload)
 
-	dataWrapper := dataPool.Get().(*bufferWrapper)
-	defer func() {
-		dataWrapper.buf = dataWrapper.buf[:0]
-		dataPool.Put(dataWrapper)
-	}()
-
-	if cap(dataWrapper.buf) < tokenLength {
-		dataWrapper.buf = make([]byte, 0, tokenLength)
+	if cap(bufferW.buf) < tokenLength {
+		bufferW.buf = make([]byte, 0, tokenLength)
 	} else {
-		dataWrapper.buf = dataWrapper.buf[:tokenLength]
+		bufferW.buf = bufferW.buf[:tokenLength]
 	}
 
-	n := copy(dataWrapper.buf, header)
-	dataWrapper.buf[n] = '.'
-	copy(dataWrapper.buf[n+1:], payload)
+	n := copy(bufferW.buf, header)
+	bufferW.buf[n] = '.'
+	copy(bufferW.buf[n+1:], payload)
 
-	_, err := mac.Write(dataWrapper.buf)
+	_, err := mac.Write(bufferW.buf)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign token")
 	}
 
-	tokenWrapper := tokenPool.Get().(*bufferWrapper)
-	defer func() {
-		tokenWrapper.buf = tokenWrapper.buf[:0]
-		tokenPool.Put(tokenWrapper)
-	}()
-
-	if cap(tokenWrapper.buf) < mac.Size() {
-		tokenWrapper.buf = make([]byte, 0, mac.Size())
+	if cap(bufferW.buf) < mac.Size() {
+		bufferW.buf = make([]byte, 0, mac.Size())
 	}
 
-	token := mac.Sum(tokenWrapper.buf[:0])
+	token := mac.Sum(bufferW.buf[:0])
 
 	return encodeTo64(token), nil
 }
@@ -279,10 +252,10 @@ func validateKey(key string) error {
 }
 
 func encodeTo64(data []byte) string {
-	encode64Wrapper := encode64Pool.Get().(*bufferWrapper)
+	encode64Wrapper := encodeBufferPool.Get().(*bufferWrapper)
 	defer func() {
 		encode64Wrapper.buf = encode64Wrapper.buf[:0]
-		encode64Pool.Put(encode64Wrapper)
+		encodeBufferPool.Put(encode64Wrapper)
 	}()
 
 	size := base64.RawURLEncoding.EncodedLen(len(data))
@@ -297,10 +270,10 @@ func encodeTo64(data []byte) string {
 }
 
 func decodeFrom64(data string) ([]byte, error) {
-	decode64Wrapper := decode64Pool.Get().(*bufferWrapper)
+	decode64Wrapper := decodeBufferPool.Get().(*bufferWrapper)
 	defer func() {
 		decode64Wrapper.buf = decode64Wrapper.buf[:0]
-		decode64Pool.Put(decode64Wrapper)
+		decodeBufferPool.Put(decode64Wrapper)
 	}()
 
 	size := base64.RawURLEncoding.DecodedLen(len(data))
