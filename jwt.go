@@ -1,4 +1,4 @@
-package jwt
+package main
 
 import (
 	"crypto/hmac"
@@ -6,39 +6,77 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"hash"
 	"strings"
 	"sync"
 	"time"
 )
 
-type tokenPayload struct {
-	Subject string `json:"sub"`
-	Iat     int64  `json:"iat"`
-	Exp     int64  `json:"exp"`
-}
+type (
+	tokenPayload struct {
+		Subject string `json:"sub"`
+		Iat     int64  `json:"iat"`
+		Exp     int64  `json:"exp"`
+	}
+
+	bufferWrapper struct {
+		buf []byte
+	}
+)
 
 const (
-	headerStr       = `{"alg":"HS256","typ":"JWT"}`
-	headerStrBase64 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+	keySize             = 32
+	headerStrBase64     = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+	headerStrBase64Size = 36
 )
 
 var (
-	hmacPool = sync.Pool{
+	dataPool = sync.Pool{
 		New: func() any {
-			return hmac.New(sha256.New, nil)
+			return &bufferWrapper{
+				buf: make([]byte, 0, 256),
+			}
 		},
 	}
 
-	base64BufPool = sync.Pool{
+	keyPool = sync.Pool{
 		New: func() any {
-			buf := make([]byte, 0, 256)
-			return &buf
+			return &bufferWrapper{
+				buf: make([]byte, 0, keySize),
+			}
+		},
+	}
+
+	tokenPool = sync.Pool{
+		New: func() any {
+			return &bufferWrapper{
+				buf: make([]byte, 0, 256),
+			}
+		},
+	}
+
+	encode64Pool = sync.Pool{
+		New: func() any {
+			return &bufferWrapper{
+				buf: make([]byte, 0, 256),
+			}
+		},
+	}
+
+	decode64Pool = sync.Pool{
+		New: func() any {
+			return &bufferWrapper{
+				buf: make([]byte, 0, 256),
+			}
 		},
 	}
 )
 
 func Generate(subject string, key string, expire time.Duration) (string, error) {
+	err := validateKey(key)
+	if err != nil {
+		return "", err
+	}
+
 	issuedAt := time.Now().UTC()
 	expiration := issuedAt.Add(expire)
 
@@ -66,33 +104,64 @@ func Generate(subject string, key string, expire time.Duration) (string, error) 
 }
 
 func signToken(key, header, payload string) (string, error) {
-	mac := hmacPool.Get().(hash.Hash)
-	defer hmacPool.Put(mac)
-	mac.Reset()
+	keyWrapper := keyPool.Get().(*bufferWrapper)
+	defer func() {
+		keyWrapper.buf = keyWrapper.buf[:0]
+		keyPool.Put(keyWrapper)
+	}()
 
-	data := make([]byte, 0, len(key)+len(header)+len(payload)+1)
-	data = append(data, key...)
-	data = append(data, header...)
-	data = append(data, '.')
-	data = append(data, payload...)
+	copy(keyWrapper.buf[:keySize], key)
 
-	_, err := mac.Write(data)
+	mac := hmac.New(sha256.New, keyWrapper.buf[:keySize])
+
+	tokenLength := headerStrBase64Size + 1 + len(payload)
+
+	dataWrapper := dataPool.Get().(*bufferWrapper)
+	defer func() {
+		dataWrapper.buf = dataWrapper.buf[:0]
+		dataPool.Put(dataWrapper)
+	}()
+
+	if cap(dataWrapper.buf) < tokenLength {
+		dataWrapper.buf = make([]byte, 0, tokenLength)
+	} else {
+		dataWrapper.buf = dataWrapper.buf[:tokenLength]
+	}
+
+	n := copy(dataWrapper.buf, header)
+	dataWrapper.buf[n] = '.'
+	copy(dataWrapper.buf[n+1:], payload)
+
+	_, err := mac.Write(dataWrapper.buf)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign token")
 	}
 
-	return encodeTo64(mac.Sum(nil)), nil
+	tokenWrapper := tokenPool.Get().(*bufferWrapper)
+	defer func() {
+		tokenWrapper.buf = tokenWrapper.buf[:0]
+		tokenPool.Put(tokenWrapper)
+	}()
+
+	if cap(tokenWrapper.buf) < mac.Size() {
+		tokenWrapper.buf = make([]byte, 0, mac.Size())
+	}
+
+	token := mac.Sum(tokenWrapper.buf[:0])
+
+	return encodeTo64(token), nil
 }
 
 func Validate(token string, key string, strict bool) error {
-	parts := strings.SplitN(token, ".", 3)
-	if len(parts) != 3 {
-		return fmt.Errorf("token malformed")
+	err := validateKey(key)
+	if err != nil {
+		return err
 	}
 
-	headerBase64 := parts[0]
-	payloadBase64 := parts[1]
-	signature := parts[2]
+	headerBase64, payloadBase64, signature, err := extractTokenParts(token)
+	if err != nil {
+		return err
+	}
 
 	if strict {
 		err := validateHeader(headerBase64)
@@ -115,7 +184,7 @@ func Validate(token string, key string, strict bool) error {
 
 	err = validateExpiry(payload)
 	if err != nil {
-		return fmt.Errorf("token expired ")
+		return fmt.Errorf("token expired")
 	}
 
 	err = validateSignature(key, headerBase64, payloadBase64, signature)
@@ -127,6 +196,28 @@ func Validate(token string, key string, strict bool) error {
 	}
 
 	return nil
+}
+
+func extractTokenParts(token string) (string, string, string, error) {
+	first := strings.IndexByte(token, '.')
+	if first <= 0 {
+		return "", "", "", fmt.Errorf("token malformed")
+	}
+
+	second := strings.IndexByte(token[first+1:], '.')
+	if second <= 0 {
+		return "", "", "", fmt.Errorf("token malformed")
+	}
+
+	header := token[:first]
+	payload := token[first+1 : first+1+second]
+	signature := token[first+1+second+1:]
+
+	if len(signature) == 0 {
+		return "", "", "", fmt.Errorf("token malformed")
+	}
+
+	return header, payload, signature, nil
 }
 
 func validateHeader(header string) error {
@@ -159,12 +250,10 @@ func validateSignature(key, header, payload, signature string) error {
 }
 
 func Export(token string) (string, error) {
-	parts := strings.SplitN(token, ".", 3)
-	if len(parts) != 3 {
-		return "", fmt.Errorf("token malformed")
+	_, payloadBase64, _, err := extractTokenParts(token)
+	if err != nil {
+		return "", err
 	}
-
-	payloadBase64 := parts[1]
 
 	payloadJSON, err := decodeFrom64(payloadBase64)
 	if err != nil {
@@ -181,44 +270,49 @@ func Export(token string) (string, error) {
 	return payload.Subject, nil
 }
 
+func validateKey(key string) error {
+	if len(key) != keySize {
+		return fmt.Errorf("key length must be %v bytes", keySize)
+	}
+
+	return nil
+}
+
 func encodeTo64(data []byte) string {
-	bufPtr := base64BufPool.Get().(*[]byte)
-	defer base64BufPool.Put(bufPtr)
-	buf := *bufPtr
+	encode64Wrapper := encode64Pool.Get().(*bufferWrapper)
+	defer func() {
+		encode64Wrapper.buf = encode64Wrapper.buf[:0]
+		encode64Pool.Put(encode64Wrapper)
+	}()
 
 	size := base64.RawURLEncoding.EncodedLen(len(data))
 
-	if size > len(buf) {
-		*bufPtr = make([]byte, size)
-		buf = *bufPtr
+	if size > cap(encode64Wrapper.buf) {
+		encode64Wrapper.buf = make([]byte, size)
 	}
 
-	base64.RawURLEncoding.Encode(buf, data)
+	base64.RawURLEncoding.Encode(encode64Wrapper.buf[:size], data)
 
-	result := make([]byte, size)
-	copy(result, buf[:size])
-
-	return string(result)
+	return string(encode64Wrapper.buf[:size])
 }
 
 func decodeFrom64(data string) ([]byte, error) {
-	bufPtr := base64BufPool.Get().(*[]byte)
-	defer base64BufPool.Put(bufPtr)
-	buf := *bufPtr
+	decode64Wrapper := decode64Pool.Get().(*bufferWrapper)
+	defer func() {
+		decode64Wrapper.buf = decode64Wrapper.buf[:0]
+		decode64Pool.Put(decode64Wrapper)
+	}()
 
 	size := base64.RawURLEncoding.DecodedLen(len(data))
-	if size > len(buf) {
-		*bufPtr = make([]byte, size)
-		buf = *bufPtr
+
+	if size > cap(decode64Wrapper.buf) {
+		decode64Wrapper.buf = make([]byte, size)
 	}
 
-	n, err := base64.RawURLEncoding.Decode(buf, []byte(data))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64: %w", err)
-	}
+	base64.RawURLEncoding.Decode(decode64Wrapper.buf[:size], []byte(data))
 
-	result := make([]byte, n)
-	copy(result, buf[:n])
+	result := make([]byte, size)
+	copy(result, decode64Wrapper.buf[:size])
 
 	return result, nil
 }
