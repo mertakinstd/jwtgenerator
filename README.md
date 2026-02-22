@@ -6,11 +6,11 @@ A lightweight and simple JWT (JSON Web Token) generator and validator library fo
 
 ## Features
 
-- Token generation functionality
-- Token validation with configurable strict mode validation (includes header verification)
+- HS256 token generation and validation
+- EdDSA (Ed25519) token generation and validation
 - Token payload extraction
 - Expiration checking
-- HMAC-SHA256 signing
+- HMAC-SHA256 and Ed25519 signing
 - Clean and intuitive API
 
 ## Installation
@@ -25,38 +25,59 @@ go get github.com/mertakinstd/jwtgenerator
 package main
 
 import (
+    "crypto/ed25519"
+    "crypto/rand"
     "fmt"
     "time"
     jwt "github.com/mertakinstd/jwtgenerator"
 )
 
 func main() {
-    // Generate token
-    token, err := jwt.Generate("user123", "secret-key", 24*time.Hour)
+    hs256Key := "12345678901234567890123456789012"
+
+    // Generate HS256 token
+    tokenHS256, err := jwt.GenerateHS256("user123", hs256Key, 24*time.Hour)
     if err != nil {
         fmt.Printf("Error while generating token")
     }
 
-    // Validate token with strict mode (validates header claims)
-    err = jwt.Validate(token, "secret-key", true)
+    // Validate HS256 token
+    err = jwt.ValidateHS256(tokenHS256, hs256Key)
     if err != nil {
         fmt.Printf("Invalid token")
     }
 
-    // Validate token without strict mode
-    err = jwt.Validate(token, "secret-key", false)
+    // Generate EdDSA key pair
+    publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+    if err != nil {
+        fmt.Printf("Error while generating keys")
+    }
+
+    // Generate EdDSA token
+    tokenEdDSA, err := jwt.GenerateEdDSA("user123", privateKey, 24*time.Hour)
+    if err != nil {
+        fmt.Printf("Error while generating token")
+    }
+
+    // Validate EdDSA token
+    err = jwt.ValidateEdDSA(tokenEdDSA, publicKey)
     if err != nil {
         fmt.Printf("Invalid token")
     }
 
     // Extract token payload
-    subject, err := jwt.Export(token)
+    subject, err := jwt.Export(tokenHS256)
     if err != nil {
         fmt.Printf("Error while exporting subject")
     }
     fmt.Printf("Token subject: %s\n", subject)
 }
 ```
+
+## Export Note
+
+`Export` only parses and returns the `sub` claim. It does not verify signature or expiration.
+Always call `ValidateHS256` or `ValidateEdDSA` before using `Export` output in security-sensitive logic.
 
 ## License
 

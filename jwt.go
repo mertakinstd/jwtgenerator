@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -24,9 +25,10 @@ type (
 )
 
 const (
-	keySize             = 32
-	headerStrBase64     = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-	headerStrBase64Size = 36
+	keySizeHS256             = 32
+	headerStrBase64Size      = 36
+	headerStrBase64HS256     = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+	headerStrBase64EdDSA     = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9"
 )
 
 var (
@@ -55,10 +57,13 @@ var (
 	}
 )
 
-func Generate(subject string, key string, expire time.Duration) (string, error) {
-	err := validateKey(key)
-	if err != nil {
-		return "", err
+func GenerateHS256(subject string, key string, expire time.Duration) (string, error) {
+	if len(key) != keySizeHS256 {
+		return "", fmt.Errorf("key length must be %v bytes", keySizeHS256)
+	}
+
+	if expire <= 0 {
+		return "", fmt.Errorf("expire duration must be greater than zero")
 	}
 
 	issuedAt := time.Now().UTC()
@@ -72,24 +77,25 @@ func Generate(subject string, key string, expire time.Duration) (string, error) 
 
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal payload")
+		return "", fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
 	payloadBase64 := encodeTo64(payloadJSON)
 
-	signature, err := signToken(key, headerStrBase64, payloadBase64)
+	signature, err := signTokenHS256(key, headerStrBase64HS256, payloadBase64)
 	if err != nil {
 		return "", err
 	}
 
-	token := headerStrBase64 + "." + payloadBase64 + "." + signature
+	token := headerStrBase64HS256 + "." + payloadBase64 + "." + signature
 
 	return token, nil
 }
 
-func signToken(key, header, payload string) (string, error) {
+func signTokenHS256(key string, header string, payload string) (string, error) {
 	bufferW := bufferPool.Get().(*bufferWrapper)
 	defer func() {
+		clear(bufferW.buf)
 		bufferW.buf = bufferW.buf[:0]
 		bufferPool.Put(bufferW)
 	}()
@@ -113,7 +119,7 @@ func signToken(key, header, payload string) (string, error) {
 
 	_, err := mac.Write(bufferW.buf)
 	if err != nil {
-		return "", fmt.Errorf("failed to sign token")
+		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
 	if cap(bufferW.buf) < mac.Size() {
@@ -125,10 +131,9 @@ func signToken(key, header, payload string) (string, error) {
 	return encodeTo64(token), nil
 }
 
-func Validate(token string, key string, strict bool) error {
-	err := validateKey(key)
-	if err != nil {
-		return err
+func ValidateHS256(token string, key string) error {
+	if len(key) != keySizeHS256 {
+		return fmt.Errorf("key length must be %v bytes", keySizeHS256)
 	}
 
 	headerBase64, payloadBase64, signature, err := extractTokenParts(token)
@@ -136,35 +141,108 @@ func Validate(token string, key string, strict bool) error {
 		return err
 	}
 
-	if strict {
-		err := validateHeader(headerBase64)
-		if err != nil {
-			return err
-		}
+	if headerBase64 != headerStrBase64HS256 {
+		return fmt.Errorf("invalid header")
+	}
+
+	referenceSignature, err := signTokenHS256(key, headerStrBase64HS256, payloadBase64)
+	if err != nil {
+		return err
+	}
+
+	if !hmac.Equal([]byte(signature), []byte(referenceSignature)) {
+		return fmt.Errorf("invalid signature")
 	}
 
 	payloadJSON, err := decodeFrom64(payloadBase64)
 	if err != nil {
-		return fmt.Errorf("failed to decode payload")
+		return err
 	}
 
 	var payload tokenPayload
 
 	err = json.Unmarshal(payloadJSON, &payload)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal payload")
+		return fmt.Errorf("failed to unmarshal payload: %w", err)
 	}
 
 	err = validateExpiry(payload)
 	if err != nil {
-		return fmt.Errorf("token expired")
+		return err
 	}
 
-	err = validateSignature(key, headerBase64, payloadBase64, signature)
+	return nil
+}
+
+func GenerateEdDSA(subject string, privateKey ed25519.PrivateKey, expire time.Duration) (string, error) {
+	if len(privateKey) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("private key length must be %v bytes", ed25519.PrivateKeySize)
+	}
+
+	if expire <= 0 {
+		return "", fmt.Errorf("expire duration must be greater than zero")
+	}
+
+	issuedAt := time.Now().UTC()
+	expiration := issuedAt.Add(expire)
+
+	payload := tokenPayload{
+		Subject: subject,
+		Iat:	 issuedAt.Unix(),
+		Exp:     expiration.Unix(),
+	}
+
+	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		if err.Error() == "invalid" {
-			return fmt.Errorf("token signature invalid")
-		}
+		return "", fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	payloadBase64 := encodeTo64(payloadJSON)
+
+	signature := ed25519.Sign(privateKey, []byte(headerStrBase64EdDSA+"."+payloadBase64))
+
+	token := headerStrBase64EdDSA + "." + payloadBase64 + "." + encodeTo64(signature)
+
+	return token, nil
+}
+
+func ValidateEdDSA(token string, publicKey ed25519.PublicKey) error {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("public key length must be %v bytes", ed25519.PublicKeySize)
+	}
+
+	headerBase64, payloadBase64, signatureBase64, err := extractTokenParts(token)
+	if err != nil {
+		return err
+	}
+
+	if headerBase64 != headerStrBase64EdDSA {
+		return fmt.Errorf("invalid header")
+	}
+
+	signature, err := decodeFrom64(signatureBase64)
+	if err != nil {
+		return err
+	}
+
+	if !ed25519.Verify(publicKey, []byte(headerStrBase64EdDSA+"."+payloadBase64), signature) {
+		return fmt.Errorf("invalid signature")
+	}
+
+	payloadJSON, err := decodeFrom64(payloadBase64)
+	if err != nil {
+		return err
+	}
+
+	var payload tokenPayload
+
+	err = json.Unmarshal(payloadJSON, &payload)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
+
+	err = validateExpiry(payload)
+	if err != nil {
 		return err
 	}
 
@@ -172,6 +250,10 @@ func Validate(token string, key string, strict bool) error {
 }
 
 func extractTokenParts(token string) (string, string, string, error) {
+	if strings.Count(token, ".") != 2 {
+		return "", "", "", fmt.Errorf("token malformed")
+	}
+
 	first := strings.IndexByte(token, '.')
 	if first <= 0 {
 		return "", "", "", fmt.Errorf("token malformed")
@@ -193,30 +275,9 @@ func extractTokenParts(token string) (string, string, string, error) {
 	return header, payload, signature, nil
 }
 
-func validateHeader(header string) error {
-	if header != headerStrBase64 {
-		return fmt.Errorf("invalid header")
-	}
-
-	return nil
-}
-
 func validateExpiry(payload tokenPayload) error {
-	if time.Now().Unix() > payload.Exp {
-		return fmt.Errorf("expired")
-	}
-
-	return nil
-}
-
-func validateSignature(key, header, payload, signature string) error {
-	referenceSignature, err := signToken(key, header, payload)
-	if err != nil {
-		return err
-	}
-
-	if !hmac.Equal([]byte(signature), []byte(referenceSignature)) {
-		return fmt.Errorf("invalid")
+	if time.Now().Unix() >= payload.Exp {
+		return fmt.Errorf("token expired")
 	}
 
 	return nil
@@ -230,25 +291,17 @@ func Export(token string) (string, error) {
 
 	payloadJSON, err := decodeFrom64(payloadBase64)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode payload")
+		return "", err
 	}
 
 	var payload tokenPayload
 
 	err = json.Unmarshal(payloadJSON, &payload)
 	if err != nil {
-		return "", fmt.Errorf("failed to unmarshal payload")
+		return "", fmt.Errorf("failed to unmarshal payload: %w", err)
 	}
 
 	return payload.Subject, nil
-}
-
-func validateKey(key string) error {
-	if len(key) != keySize {
-		return fmt.Errorf("key length must be %v bytes", keySize)
-	}
-
-	return nil
 }
 
 func encodeTo64(data []byte) string {
@@ -282,10 +335,13 @@ func decodeFrom64(data string) ([]byte, error) {
 		decode64Wrapper.buf = make([]byte, size)
 	}
 
-	base64.RawURLEncoding.Decode(decode64Wrapper.buf[:size], []byte(data))
+	n, err := base64.RawURLEncoding.Decode(decode64Wrapper.buf[:size], []byte(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base64 data: %w", err)
+	}
 
-	result := make([]byte, size)
-	copy(result, decode64Wrapper.buf[:size])
+	result := make([]byte, n)
+	copy(result, decode64Wrapper.buf[:n])
 
 	return result, nil
 }
