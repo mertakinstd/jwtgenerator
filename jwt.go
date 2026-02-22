@@ -25,10 +25,10 @@ type (
 )
 
 const (
-	keySizeHS256             = 32
-	headerStrBase64Size      = 36
-	headerStrBase64HS256     = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-	headerStrBase64EdDSA     = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9"
+	keySizeHS256         = 32
+	headerStrBase64Size  = 36
+	headerStrBase64HS256 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+	headerStrBase64EdDSA = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9"
 )
 
 var (
@@ -188,7 +188,7 @@ func GenerateEdDSA(subject string, privateKey ed25519.PrivateKey, expire time.Du
 
 	payload := tokenPayload{
 		Subject: subject,
-		Iat:	 issuedAt.Unix(),
+		Iat:     issuedAt.Unix(),
 		Exp:     expiration.Unix(),
 	}
 
